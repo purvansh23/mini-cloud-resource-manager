@@ -1,0 +1,11 @@
+{
+  "name": "ubuntu-auto-vm",
+  "host": "10.20.24.40",
+  "dom0_user": "root",
+  "dom0_password": "xenserver123",
+  "iso_name": "ubuntu-24.04.3-desktop-amd64.iso",
+  "sr_name": "NFS SR",
+  "network_name": "Pool-wide network associated with eth0",
+  "ram_mb": 4096,
+  "vcpus": 2
+}
