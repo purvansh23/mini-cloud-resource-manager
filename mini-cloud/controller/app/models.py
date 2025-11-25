@@ -1,97 +1,68 @@
-# app/models.py
-from sqlalchemy import Column, Integer, String, Float, DateTime, JSON, ForeignKey, func
-from sqlalchemy.dialects.postgresql import UUID
-import uuid
+from sqlalchemy import Column, Integer, String, Float, ForeignKey
 from sqlalchemy.orm import relationship
-from app.db import Base
+from sqlalchemy.ext.declarative import declarative_base
+import time
+
+Base = declarative_base()
 
 class Host(Base):
     __tablename__ = "hosts"
-    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    name = Column(String, nullable=False, index=True, unique=True)
-    ip = Column(String, nullable=True)
-    last_seen = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
-    metadata_json = Column("metadata", JSON, nullable=True)
 
-    metrics = relationship("HostMetric", back_populates="host")
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String, unique=True, nullable=False)
+    uuid_xen = Column(String, unique=True, nullable=True)
+    ip = Column(String, nullable=True)
+
+    metrics = relationship(
+        "HostMetric",
+        back_populates="host",
+        cascade="all, delete-orphan"
+    )
+
+    vms = relationship(
+        "VM",
+        back_populates="host",
+        cascade="all, delete-orphan"
+    )
+
 
 class HostMetric(Base):
     __tablename__ = "host_metrics"
+
     id = Column(Integer, primary_key=True, index=True)
-    host_id = Column(UUID(as_uuid=True), ForeignKey("hosts.id"), nullable=False)
-    cpu_percent = Column(Float)
-    mem_percent = Column(Float)
-    load_avg = Column(Float)
-    vms_running = Column(Integer)
-    ts = Column(DateTime(timezone=True), server_default=func.now())
+    host_id = Column(Integer, ForeignKey("hosts.id"), nullable=False)
+
+    cpu_percent = Column(Float, default=0.0)
+    mem_percent = Column(Float, default=0.0)
+    vms_running = Column(Integer, default=0)
+
+    ts = Column(Integer, default=lambda: int(time.time()))
 
     host = relationship("Host", back_populates="metrics")
 
+
 class VM(Base):
     __tablename__ = "vms"
-    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    name = Column(String, nullable=False, index=True)
-    xen_uuid = Column(String, nullable=True, index=True)
-    host_id = Column(UUID(as_uuid=True), ForeignKey("hosts.id"), nullable=True)
-    vcpu = Column(Integer, default=1)
-    memory_mb = Column(Integer, default=512)
-    state = Column(String, default="stopped")
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String, nullable=False)
+    uuid = Column(String, unique=True, nullable=True)
+
+    host_id = Column(Integer, ForeignKey("hosts.id"))
+    host = relationship("Host", back_populates="vms")
+
     ip = Column(String, nullable=True)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    memory_mb = Column(Integer, default=0)
+    vcpus = Column(Integer, default=1)
+
+    created_at = Column(Integer, default=lambda: int(time.time()))
+
 
 class Job(Base):
     __tablename__ = "jobs"
-    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+
+    id = Column(Integer, primary_key=True, index=True)
     type = Column(String, nullable=False)
+    payload = Column(String, nullable=True)
     status = Column(String, default="pending")
-    payload = Column(JSON)
-    result = Column(JSON, nullable=True)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
-
-class Event(Base):
-    __tablename__ = "events"
-    id = Column(Integer, primary_key=True)
-    level = Column(String, default="info")
-    message = Column(String)
-    metadata_json = Column("metadata", JSON, nullable=True)
-    ts = Column(DateTime(timezone=True), server_default=func.now())
-
-
-# -----------------------
-# Migration models below
-# -----------------------
-
-class Migration(Base):
-    __tablename__ = "migrations"
-
-    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    vm_id = Column(UUID(as_uuid=True), nullable=False, index=True)
-    source_host = Column(String, nullable=False)
-    target_host = Column(String, nullable=False)
-    reason = Column(String, nullable=True)
-    client_request_id = Column(String, nullable=True, index=True)
-
-    status = Column(String, nullable=False, default="queued")  # queued, validating, running, finalizing, completed, failed, cancelled
-    progress = Column(Integer, default=0)
-
-    started_at = Column(DateTime(timezone=True), nullable=True)
-    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
-    finished_at = Column(DateTime(timezone=True), nullable=True)
-
-    details = Column(JSON, nullable=True)
-
-    # Relationship to events for convenience
-    events = relationship("MigrationEvent", back_populates="migration", cascade="all, delete-orphan")
-
-class MigrationEvent(Base):
-    __tablename__ = "migration_events"
-
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    migration_id = Column(UUID(as_uuid=True), ForeignKey("migrations.id"), nullable=False)
-    ts = Column(DateTime(timezone=True), server_default=func.now())
-    level = Column(String, nullable=False)
-    message = Column(String, nullable=False)
-    meta = Column(JSON, nullable=True)
-
-    migration = relationship("Migration", back_populates="events")
+    created_at = Column(Integer, default=lambda: int(time.time()))

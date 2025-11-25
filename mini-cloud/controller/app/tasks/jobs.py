@@ -1,12 +1,15 @@
 # app/tasks/jobs.py
 import traceback
+import logging
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
+
 from app.config import settings
 from app import crud
 from app.xoa_client import get_xoa_rest_client
+from app.scheduler import auto_migrate, migrate_vm
 
-# import celery instance
+# import celery instance (your project uses `celery`, not `celery_app`)
 from app.tasks.celery_app import celery
 
 # Optional SSH driver helpers (if you still want SSH fallback)
@@ -16,7 +19,21 @@ try:
 except Exception:
     _HAS_SSH_DRIVER = False
 
-# DB session factory for tasks (separate engine to avoid forking issues)
+# Try both snake_case and CamelCase module names for the collector helper
+try:
+    from app.tasks.collect_metrics import collect_metrics
+except Exception:  # pragma: no cover
+    try:
+        from app.tasks.collectMetrics import collect_metrics  # fallback to CamelCase file
+    except Exception:
+        collect_metrics = None  # will be checked at runtime
+
+logger = logging.getLogger(__name__)
+
+# ----------------------------
+# DB session factory for tasks
+# (separate engine to avoid forking issues)
+# ----------------------------
 DATABASE_URL = (
     f"postgresql://{settings.db_user}:{settings.db_pass}"
     f"@{settings.db_host}:{settings.db_port}/{settings.db_name}"
@@ -31,6 +48,9 @@ def task_get_db():
     finally:
         db.close()
 
+# ============================
+# VM CREATION (XOA/SSH)
+# ============================
 @celery.task(bind=True, acks_late=True)
 def create_vm_job(self, job_id: str, payload: dict):
     """
@@ -51,13 +71,11 @@ def create_vm_job(self, job_id: str, payload: dict):
             if not pool_uuid:
                 raise ValueError("pool_uuid required for XOA path")
 
-            # Build create payload according to XOA rest v0 shape (use what you need)
+            # Build create payload according to XOA REST shape (extend via xoa_body)
             body = {
                 "name_label": payload.get("name") or payload.get("name_label") or f"vm-{job_id}",
                 "template": payload.get("template_uuid"),
-                # optional: you can include disks, memory, cpu fields if required
             }
-            # allow custom extra body fields from payload['xoa_body'] if present
             extra = payload.get("xoa_body")
             if isinstance(extra, dict):
                 body.update(extra)
@@ -125,3 +143,62 @@ def create_vm_job(self, job_id: str, payload: dict):
             next(db_gen, None)
         except Exception:
             pass
+
+# ============================
+# PERIODIC / MAINTENANCE TASKS
+# ============================
+
+@celery.task(name="app.tasks.jobs.collect_metrics_job")
+def collect_metrics_job():
+    if collect_metrics is None:
+        # keep the task from failing the whole beat loop if the module isn't present
+        logger.error("collect_metrics module not found; skipping metrics collection")
+        return {"status": "error", "error": "collect_metrics not available"}
+    try:
+        collect_metrics()
+        return {"status": "success"}
+    except Exception as e:
+        logger.exception("collect_metrics_job failed")
+        return {"status": "error", "error": str(e)}
+
+@celery.task(name="app.tasks.jobs.migrate_hosts_job")
+def migrate_hosts_job():
+    try:
+        print("[MIGRATION] Checking if migration is needed")
+        result = auto_migrate()
+        print("[MIGRATION] Result:", result)
+        return result
+    except Exception as e:
+        print("[MIGRATION] ERROR:", e)
+        return {"error": str(e)}
+
+# Celery Beat schedule (kept identical to the report, using your `celery` instance)
+celery.conf.beat_schedule = {
+    "collect-host-metrics-every-2-minutes": {
+        "task": "app.tasks.jobs.collect_metrics_job",
+        "schedule": 120,
+    },
+    "migration-check-every-2-minutes": {
+        "task": "app.tasks.jobs.migration_job",
+        "schedule": 120,
+    },
+}
+
+@celery.task(name="app.tasks.jobs.migration_job")
+def migration_job():
+    # Lazy import of session factory to avoid circular deps in some setups
+    from app.db import SessionLocal  # type: ignore
+    print("\n==================== AUTO MIGRATION CHECK =====================")
+    db = SessionLocal()
+    try:
+        result = migrate_vm(db)
+        if result:
+            print(f"[AUTO-MIGRATE] Migration executed {result}")
+        else:
+            print("[AUTO-MIGRATE] No migration required at this cycle")
+        return {"status": "checked", "result": result}
+    except Exception as e:
+        print(f"[AUTO-MIGRATE] ERROR {e}")
+        return {"status": "error", "message": str(e)}
+    finally:
+        db.close()
